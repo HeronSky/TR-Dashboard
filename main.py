@@ -1,4 +1,4 @@
-import json,folium,branca.colormap as cm,streamlit as st,pandas as pd
+import json,folium,streamlit as st,pandas as pd
 from streamlit_folium import st_folium
 
 st.set_page_config(page_title="TR MAP",layout="wide")
@@ -35,8 +35,34 @@ st.sidebar.title("TR MAP")
 selected_day = st.sidebar.selectbox("選擇日期",days)
 st.sidebar.divider()
 
+PALETTE = {
+    "line": "#3A3B4C",
+    "station_border": "none",
+    "tier_high": "#FF4B4B",
+    "tier_mid_high": "#FFAA00",
+    "tier_mid": "#FFD700",
+    "tier_low": "#E0E0E0",
+}
 
-m = folium.Map(location=[23.5,121.0],zoom_start=8,tiles="CartoDB dark_matter nolabels")
+
+m = folium.Map(location=[23.5,121.0],zoom_start=9,tiles="CartoDB dark_matter nolabels")
+
+map_name = m.get_name()
+zoom_on_blank_click_js = f"""
+<script>
+(function() {{
+    var map = {map_name};
+    map.on('click', function(e) {{
+        if (e.sourceTarget && e.sourceTarget instanceof L.Map) {{
+            var maxZoom = map.getMaxZoom ? map.getMaxZoom() : 18;
+            var nextZoom = Math.min(map.getZoom() + 1, maxZoom || 18);
+            map.setView(e.latlng, nextZoom, {{animate: true}});
+        }}
+    }});
+}})();
+</script>
+"""
+m.get_root().add_child(folium.Element(zoom_on_blank_click_js))
 
 with open("data/台鐵全部時刻表.json",'r',encoding='utf-8') as f:
     schedule_data = json.load(f)
@@ -71,7 +97,7 @@ for timetable in schedule_data['TrainTimetables']:
         direction_text = "逆行"
 
     for stop in timetable['StopTimes']:
-        time = time = stop.get('DepartureTime', stop.get('ArrivalTime'))
+        time = stop.get('DepartureTime', stop.get('ArrivalTime'))
         station_name = stop['StationName']['Zh_tw']
         station_id = stop['StationID']
         id_name_map[station_name] = station_id
@@ -84,8 +110,6 @@ for timetable in schedule_data['TrainTimetables']:
             "時間": time,"車種": train_type,"車次": train_no,"終點站": terminal_station,"方向": direction_text
         }
         StationInfo[station_id].append(info_dict)
-        
-print(TimeTables)
 
 with open('data/台鐵線型.json','r',encoding='utf-8') as f:
     shape_data = json.load(f)
@@ -111,9 +135,9 @@ for shape in shape_data['Shapes']:
         if len(track_path) >= 2:
             folium.PolyLine(
                 locations=track_path,
-                color='#335577',
-                weight=2,
-                opacity=0.5,
+                color=PALETTE["line"],
+                weight=2.2,
+                opacity=0.55,
             ).add_to(m)
 
 
@@ -126,30 +150,38 @@ for station in station_data:
     lon = station['StationPosition']['PositionLon']
 
     freq = TimeTables.get(station_name,0)
+
     if freq >= 150:
-        color = '#FF0055'
-        radius = 6
+        color, vis_radius = PALETTE["tier_high"], 4.0
     elif freq >= 100:
-        color = '#FF9900'
-        radius = 5
+        color, vis_radius = PALETTE["tier_mid_high"], 3.5
     elif freq >= 50:
-        color = '#00FFCC'
-        radius = 4
+        color, vis_radius = PALETTE["tier_mid"], 3.0
     elif freq > 0:
-        color = '#666666'
-        radius = 3
-    else: 
+        color, vis_radius = PALETTE["tier_low"], 2.5
+    else:
         continue
-        
+
     folium.CircleMarker(
         location=[lat,lon],
-        radius=radius,
+        radius=vis_radius,
         color=color,
+        weight=0,
         fill=True,
         fill_color=color,
         fill_opacity=0.7,
-        tooltip=station_name,
-        popup=f"{station_name}: {freq} trains"
+        interactive=False
+    ).add_to(m)
+
+    folium.CircleMarker(
+        location=[lat,lon],
+        radius=15,
+        color='none',
+        weight=0,
+        fill=True,
+        fill_color='white',
+        fill_opacity=0.0,
+        tooltip=station_name
     ).add_to(m)
 
 
@@ -161,7 +193,6 @@ if map_data and map_data.get("last_object_clicked_tooltip"):
 if user_clicked_station and user_clicked_station in id_name_map:
         
     with st.sidebar:
-        st.divider()    
         clicked = id_name_map[user_clicked_station]
         if clicked in StationInfo:
             info_list = StationInfo[clicked]
