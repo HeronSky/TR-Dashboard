@@ -142,7 +142,7 @@ with open("data/台鐵線型.json","r",encoding="utf-8") as f:
 for shape in shape_data["Shapes"]:
     wkt = shape["Geometry"]
     wkt = wkt.replace("MULTILINESTRING","").replace("LINESTRING","")
-    segments = wkt.split("),(")
+    segments = wkt.split("), (")
 
     for segment in segments:
         clean_segment = segment.replace("(","").replace(")","")
