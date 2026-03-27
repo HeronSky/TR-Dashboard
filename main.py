@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-st.set_page_config(page_title="TR MAP",layout="wide")
+st.set_page_config(page_title="TR Dashboard",layout="wide")
 
 st.markdown(
     """
