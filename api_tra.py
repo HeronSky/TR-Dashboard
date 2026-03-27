@@ -98,6 +98,9 @@ def download_timetable(access_token: str,days: int = 7) -> None:
         target_date_str = target_date.strftime('%Y-%m-%d')
         daily_url = DAILY_TIMETABLE_URL_TEMPLATE.format(train_date=target_date_str)
 
+        if daily_file.exists():
+            continue
+
         daily_data = fetch_json(daily_url,headers)
         if daily_data is None:
             failed_dates.append(target_date_str)
