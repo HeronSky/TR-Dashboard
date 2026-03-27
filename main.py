@@ -1,4 +1,8 @@
-import json,folium,streamlit as st,pandas as pd
+import json
+from datetime import date,timedelta
+import folium
+import pandas as pd
+import streamlit as st
 from streamlit_folium import st_folium
 
 st.set_page_config(page_title="TR MAP",layout="wide")
@@ -21,7 +25,7 @@ st.markdown(
             min-width: 350px;
             max-width: 350px;
         }
-        [data-testid="stAppViewContainer"], [data-testid="stMainBlockContainer"] {
+        [data-testid="stAppViewContainer"],[data-testid="stMainBlockContainer"] {
             overflow: hidden !important;
         }
     </style>
@@ -29,10 +33,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-selected_day = "Monday"
-days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-st.sidebar.title("TR MAP")
-selected_day = st.sidebar.selectbox("選擇日期",days)
+DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+
+st.sidebar.title("TR Dashboard")
+today = date.today()
+max_selectable_date = today + timedelta(days=6)
+selected_date = st.sidebar.date_input(
+    "選擇日期",
+    value=today,
+    min_value=today,
+    max_value=max_selectable_date,
+    format="YYYY/MM/DD",
+)
+selected_day = DAYS[selected_date.weekday()]
 st.sidebar.divider()
 
 PALETTE = {
@@ -44,7 +57,6 @@ PALETTE = {
     "tier_low": "#E0E0E0",
 }
 
-
 m = folium.Map(location=[23.5,121.0],zoom_start=9,tiles="CartoDB dark_matter nolabels")
 
 map_name = m.get_name()
@@ -52,11 +64,11 @@ zoom_on_blank_click_js = f"""
 <script>
 (function() {{
     var map = {map_name};
-    map.on('click', function(e) {{
+    map.on('click',function(e) {{
         if (e.sourceTarget && e.sourceTarget instanceof L.Map) {{
             var maxZoom = map.getMaxZoom ? map.getMaxZoom() : 18;
-            var nextZoom = Math.min(map.getZoom() + 1, maxZoom || 18);
-            map.setView(e.latlng, nextZoom, {{animate: true}});
+            var nextZoom = Math.min(map.getZoom() + 1,maxZoom || 18);
+            map.setView(e.latlng,nextZoom,{{animate: true}});
         }}
     }});
 }})();
@@ -64,66 +76,79 @@ zoom_on_blank_click_js = f"""
 """
 m.get_root().add_child(folium.Element(zoom_on_blank_click_js))
 
-with open("data/台鐵全部時刻表.json",'r',encoding='utf-8') as f:
-    schedule_data = json.load(f)
+date_str = selected_date.strftime("%Y-%m-%d")
+file_path = f"data/{date_str}.json"
 
-TimeTables = {}
-StationInfo = {}
+try:
+    with open(file_path,"r",encoding="utf-8") as f:
+        schedule_data = json.load(f)
+except FileNotFoundError:
+    st.warning(f"資料錯誤，查無{date_str}的時刻表：/ 將顯示定期時刻表。")
+    with open("data/台鐵定期時刻表.json","r",encoding="utf-8") as f:
+        schedule_data = json.load(f)
+
+if not isinstance(schedule_data,dict) or "TrainTimetables" not in schedule_data:
+    st.warning(f"{date_str}時刻表格式異常：/ 將顯示定期時刻表。")
+    with open("data/台鐵定期時刻表.json","r",encoding="utf-8") as f:
+        schedule_data = json.load(f)
+
+time_tables = {}
+station_info = {}
 id_name_map = {}
 
-for timetable in schedule_data['TrainTimetables']:
-    if timetable['ServiceDay'][selected_day] == 0:
-        continue
-
-    train_info = timetable['TrainInfo']
-    train_no = train_info['TrainNo']
-    terminal_station = train_info['EndingStationName']['Zh_tw']
-    direction = train_info['Direction']
-    train_type = train_info['TrainTypeName']['Zh_tw']
+for timetable in schedule_data.get("TrainTimetables",[]):
+    train_info = timetable["TrainInfo"]
+    train_no = train_info["TrainNo"]
+    terminal_station = train_info["EndingStationName"]["Zh_tw"]
+    direction = train_info["Direction"]
+    train_type = train_info["TrainTypeName"]["Zh_tw"]
 
     if "柴聯" in train_type:
         train_type = "柴聯自強號"
     elif "推拉式" in train_type:
         train_type = "PP自強號"
-    else :
-        train_type = train_type.replace("(3000)", "3000")
+    else:
+        train_type = train_type.replace("(3000)","3000")
         train_type = train_type.split("(")[0]
-    
-
 
     if direction == 0 or direction == "0":
         direction_text = "順行"
     else:
         direction_text = "逆行"
 
-    for stop in timetable['StopTimes']:
-        time = stop.get('DepartureTime', stop.get('ArrivalTime'))
-        station_name = stop['StationName']['Zh_tw']
-        station_id = stop['StationID']
-        id_name_map[station_name] = station_id
-        TimeTables[station_name] = TimeTables.get(station_name,0)+1
-        
-        if station_id not in StationInfo:
-            StationInfo[station_id] = []
-        
-        info_dict = {
-            "時間": time,"車種": train_type,"車次": train_no,"終點站": terminal_station,"方向": direction_text
-        }
-        StationInfo[station_id].append(info_dict)
+    for stop in timetable["StopTimes"]:
+        time = stop.get("DepartureTime",stop.get("ArrivalTime"))
+        station_name = stop["StationName"]["Zh_tw"]
+        station_id = stop["StationID"]
 
-with open('data/台鐵線型.json','r',encoding='utf-8') as f:
+        id_name_map[station_name] = station_id
+        time_tables[station_name] = time_tables.get(station_name,0) + 1
+
+        if station_id not in station_info:
+            station_info[station_id] = []
+
+        info_dict = {
+            "時間": time,
+            "車種": train_type,
+            "車次": train_no,
+            "終點站": terminal_station,
+            "方向": direction_text,
+        }
+        station_info[station_id].append(info_dict)
+
+with open("data/台鐵線型.json","r",encoding="utf-8") as f:
     shape_data = json.load(f)
 
-for shape in shape_data['Shapes']:
-    wkt = shape['Geometry']
-    wkt = wkt.replace('MULTILINESTRING','').replace('LINESTRING','')
-    segments = wkt.split('), (')
+for shape in shape_data["Shapes"]:
+    wkt = shape["Geometry"]
+    wkt = wkt.replace("MULTILINESTRING","").replace("LINESTRING","")
+    segments = wkt.split("),(")
 
     for segment in segments:
-        clean_segment = segment.replace('(','').replace(')','')
+        clean_segment = segment.replace("(","").replace(")","")
         track_path = []
 
-        for p in clean_segment.split(','):
+        for p in clean_segment.split(","):
             coords = p.strip().split()
             if len(coords) != 2:
                 continue
@@ -140,25 +165,24 @@ for shape in shape_data['Shapes']:
                 opacity=0.55,
             ).add_to(m)
 
-
-with open('data/車站基本資料.json','r',encoding='utf-8') as f:
+with open("data/車站基本資料.json","r",encoding="utf-8") as f:
     station_data = json.load(f)
 
 for station in station_data:
-    station_name = station['StationName']['Zh_tw']
-    lat = station['StationPosition']['PositionLat']
-    lon = station['StationPosition']['PositionLon']
+    station_name = station["StationName"]["Zh_tw"]
+    lat = station["StationPosition"]["PositionLat"]
+    lon = station["StationPosition"]["PositionLon"]
 
-    freq = TimeTables.get(station_name,0)
+    freq = time_tables.get(station_name,0)
 
     if freq >= 150:
-        color, vis_radius = PALETTE["tier_high"], 4.0
+        color,vis_radius = PALETTE["tier_high"],4.0
     elif freq >= 100:
-        color, vis_radius = PALETTE["tier_mid_high"], 3.5
+        color,vis_radius = PALETTE["tier_mid_high"],3.5
     elif freq >= 50:
-        color, vis_radius = PALETTE["tier_mid"], 3.0
+        color,vis_radius = PALETTE["tier_mid"],3.0
     elif freq > 0:
-        color, vis_radius = PALETTE["tier_low"], 2.5
+        color,vis_radius = PALETTE["tier_low"],2.5
     else:
         continue
 
@@ -170,20 +194,19 @@ for station in station_data:
         fill=True,
         fill_color=color,
         fill_opacity=0.7,
-        interactive=False
+        interactive=False,
     ).add_to(m)
 
     folium.CircleMarker(
         location=[lat,lon],
         radius=15,
-        color='none',
+        color="none",
         weight=0,
         fill=True,
-        fill_color='white',
+        fill_color="white",
         fill_opacity=0.0,
-        tooltip=station_name
+        tooltip=station_name,
     ).add_to(m)
-
 
 user_clicked_station = None
 map_data = st_folium(m,use_container_width=True,height=900)
@@ -191,12 +214,11 @@ if map_data and map_data.get("last_object_clicked_tooltip"):
     user_clicked_station = map_data["last_object_clicked_tooltip"]
 
 if user_clicked_station and user_clicked_station in id_name_map:
-        
     with st.sidebar:
         clicked = id_name_map[user_clicked_station]
-        if clicked in StationInfo:
-            info_list = StationInfo[clicked]
-            
+        if clicked in station_info:
+            info_list = station_info[clicked]
+
             schedule_table = pd.DataFrame(info_list)
             st.write(f"### {user_clicked_station}站")
             st.write(f"總計 {len(info_list)} 班列車")
@@ -204,7 +226,8 @@ if user_clicked_station and user_clicked_station in id_name_map:
             if choice != "全部":
                 schedule_table = schedule_table[schedule_table["方向"] == choice]
             schedule_table = schedule_table.sort_values(by="時間")
-            st.dataframe(schedule_table, hide_index=True, use_container_width=True, height=500)
+            st.dataframe(schedule_table,hide_index=True,width="stretch",height=500)
+
 
 
 
