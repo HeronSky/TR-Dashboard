@@ -1,102 +1,147 @@
+import datetime,json,time,os
 from pathlib import Path
-from datetime import date, timedelta
-import json
-import requests
-import os
-import time
+from urllib import error,parse,request
 
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+CLIENT_ID = os.environ.get('TDX_CLIENT_ID','')
+CLIENT_SECRET = os.environ.get('TDX_CLIENT_SECRET','')
 
-TOKEN_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
-TRA_BASE = "https://tdx.transportdata.tw/api/basic/v3/Rail/TRA"
+AUTH_URL = 'https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token'
+GENERAL_TIMETABLE_URL = 'https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/GeneralTrainTimetable?%24format=JSON'
+DAILY_TIMETABLE_URL_TEMPLATE = 'https://tdx.transportdata.tw/api/basic/v3/Rail/TRA/DailyTrainTimetable/TrainDate/{train_date}?%24format=JSON'
+DATA_DIR = Path('data')
 
-def get_required_env(name: str) -> str:
-    value = os.getenv(name)
-    if value is None or value.strip() == "":
-        raise RuntimeError(f"Missing required env var: {name}")
-    return value
 
-def get_access_token(client_id: str, client_secret: str) -> str:
-    resp = requests.post(
-        TOKEN_URL,
-        data={
-            "grant_type": "client_credentials",
-            "client_id": client_id,
-            "client_secret": client_secret,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["access_token"]
+def fetch_token() -> str | None:
+    form_data = parse.urlencode(
+        {
+            'grant_type': 'client_credentials',
+            'client_id': CLIENT_ID,
+            'client_secret': CLIENT_SECRET,
+        }
+    ).encode('utf-8')
 
-def get_json(url: str, token: str, retries: int = 3, sleep_sec: int = 2):
-    headers = {"authorization": f"Bearer {token}"}
-    last_err: Exception | None = None
+    req = request.Request(AUTH_URL,data=form_data,method='POST')
+    req.add_header('Content-Type','application/x-www-form-urlencoded')
 
-    for _ in range(retries):
+    try:
+        with request.urlopen(req,timeout=15) as resp:
+            payload = resp.read().decode('utf-8')
+            token_payload = json.loads(payload)
+            access_token = token_payload.get('access_token')
+            if not access_token:
+                print({'error': 'Missing access_token','detail': token_payload})
+                return None
+            return access_token
+    except error.HTTPError as e:
+        detail = e.read().decode('utf-8',errors='ignore')
+        print({'error': f'HTTP {e.code}','detail': detail})
+        return None
+    except error.URLError as e:
+        print({'error': 'Network error','detail': str(e.reason)})
+        return None
+
+
+def fetch_json(
+    url: str,
+    headers: dict[str,str],
+    timeout: int = 60,
+    max_retries: int = 3,
+) -> dict | list | None:
+    for attempt in range(max_retries + 1):
+        req = request.Request(url,headers=headers,method='GET')
         try:
-            resp = requests.get(url, headers=headers, timeout=60)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            last_err = e
-            time.sleep(sleep_sec)
+            with request.urlopen(req,timeout=timeout) as resp:
+                payload = resp.read().decode('utf-8')
+                return json.loads(payload)
+        except error.HTTPError as e:
+            detail = e.read().decode('utf-8',errors='ignore')
+            if e.code == 429 and attempt < max_retries:
+                retry_after = e.headers.get('Retry-After')
+                wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else (attempt + 1) * 2
+                print({'warning': 'Rate limit hit','url': url,'wait_seconds': wait_seconds,'attempt': attempt + 1})
+                time.sleep(wait_seconds)
+                continue
+            print({'error': f'HTTP {e.code}','url': url,'detail': detail})
+            return None
+        except error.URLError as e:
+            print({'error': 'Network error','url': url,'detail': str(e.reason)})
+            return None
+        except json.JSONDecodeError as e:
+            print({'error': 'Invalid JSON response','url': url,'detail': str(e)})
+            return None
 
-    if last_err is not None:
-        raise last_err
-    raise RuntimeError("Request failed without captured exception")
+    return None
 
-def save_json(path: Path, payload):
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"Done. File saved: {path.as_posix()}")
 
-def fetch_static_files(token: str):
-    station_url = f"{TRA_BASE}/Station?$format=JSON"
-    train_type_url = f"{TRA_BASE}/TrainType?$format=JSON"
-    timetable_url = f"{TRA_BASE}/GeneralTimetable?$format=JSON"
-
-    station_data = get_json(station_url, token)
-    train_type_data = get_json(train_type_url, token)
-    timetable_data = get_json(timetable_url, token)
-
-    save_json(DATA_DIR / "台鐵車站.json", station_data)
-    save_json(DATA_DIR / "台鐵車種.json", train_type_data)
-    save_json(DATA_DIR / "台鐵定期時刻表.json", timetable_data)
-
-def prune_expired_daily_files(start_date: date, end_date: date):
-    keep = {
-        f"台鐵每日時刻表_{(start_date + timedelta(days=i)):%Y-%m-%d}.json"
-        for i in range((end_date - start_date).days + 1)
+def download_timetable(access_token: str,days: int = 7) -> None:
+    headers = {
+        'authorization': f'Bearer {access_token}',
+        'accept': 'application/json',
     }
-    for f in DATA_DIR.glob("台鐵每日時刻表_*.json"):
-        if f.name not in keep:
-            f.unlink()
-            print(f"Removed expired file: {f.as_posix()}")
+    DATA_DIR.mkdir(parents=True,exist_ok=True)
 
-def fetch_daily_files(token: str, start_date: date, end_date: date):
-    print(f"Downloading TRA daily timetables from {start_date} to {end_date}...")
-    for i in range((end_date - start_date).days + 1):
-        d = start_date + timedelta(days=i)
-        daily_file = DATA_DIR / f"台鐵每日時刻表_{d:%Y-%m-%d}.json"
-        if daily_file.exists():
-            print(f"Skip existing file: {daily_file.as_posix()}")
+    print('Downloading TRA general timetable...')
+    general_data = fetch_json(GENERAL_TIMETABLE_URL,headers)
+    if general_data is not None:
+        general_file = DATA_DIR / '台鐵定期時刻表.json'
+        with general_file.open('w',encoding='utf-8') as f:
+            json.dump(general_data,f,ensure_ascii=False,indent=2)
+        print(f'Done. File saved: {general_file.as_posix()}')
+
+    start_date = datetime.date.today()
+    end_date = start_date + datetime.timedelta(days=days - 1)
+    print(f'Downloading TRA daily timetables from {start_date} to {end_date}...')
+
+    keep_names = {
+        f'{(start_date + datetime.timedelta(days=offset)).strftime("%Y-%m-%d")}.json'
+        for offset in range(days)
+    }
+    for f in DATA_DIR.glob('*.json'):
+        if f.name == '台鐵定期時刻表.json':
             continue
-        url = f"{TRA_BASE}/DailyTrainTimetable/TrainDate/{d:%Y-%m-%d}?$format=JSON"
-        payload = get_json(url, token)
-        save_json(daily_file, payload)
+        if f.name not in keep_names:
+            f.unlink()
+            print(f'Removed expired file: {f.as_posix()}')
 
-def main():
-    client_id = get_required_env("TDX_CLIENT_ID")
-    client_secret = get_required_env("TDX_CLIENT_SECRET")
-    token = get_access_token(client_id, client_secret)
+    failed_dates: list[str] = []
+    for offset in range(days):
+        target_date = start_date + datetime.timedelta(days=offset)
+        target_date_str = target_date.strftime('%Y-%m-%d')
+        daily_url = DAILY_TIMETABLE_URL_TEMPLATE.format(train_date=target_date_str)
+        daily_file = DATA_DIR / f'{target_date_str}.json'
 
-    fetch_static_files(token)
+        if daily_file.exists():
+            continue
 
-    start = date.today()
-    end = start + timedelta(days=6)
-    prune_expired_daily_files(start, end)
-    fetch_daily_files(token, start, end)
+        daily_data = fetch_json(daily_url,headers)
+        if daily_data is None:
+            failed_dates.append(target_date_str)
+            continue
 
-if __name__ == "__main__":
+        with daily_file.open('w',encoding='utf-8') as f:
+            json.dump(daily_data,f,ensure_ascii=False,indent=2)
+        print(f'Done. File saved: {daily_file.as_posix()}')
+
+        if offset < days - 1:
+            time.sleep(15)
+
+    if failed_dates:
+        print({'warning': 'Some daily timetable downloads failed','dates': failed_dates})
+    else:
+        print('All daily timetable files downloaded successfully.')
+
+
+def main() -> None:
+    if not CLIENT_ID or not CLIENT_SECRET:
+        print({'error': 'Missing TDX_CLIENT_ID or TDX_CLIENT_SECRET'})
+        raise SystemExit(1)
+
+    token = fetch_token()
+    if not token:
+        raise SystemExit(1)
+
+    download_timetable(token,days=7)
+
+
+if __name__ == '__main__':
     main()
