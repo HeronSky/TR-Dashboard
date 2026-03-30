@@ -20,7 +20,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Needed so pull --rebase has full history
           fetch-depth: 0
 
       - name: Setup Python 3.10
@@ -35,38 +34,42 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Run API script
+      - name: Commit and push changes
+        shell: bash
         env:
           TDX_CLIENT_ID: ${{ secrets.TDX_CLIENT_ID }}
           TDX_CLIENT_SECRET: ${{ secrets.TDX_CLIENT_SECRET }}
-        run: python api_tra.py
-
-      - name: Commit and push changes
-        shell: bash
         run: |
           set -euo pipefail
 
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Add only expected output files
-          git add data/*.json || true
-
-          # Exit if nothing changed
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-
-          git commit -m "chore: auto-update timetable"
-
           success=0
           for i in 1 2 3; do
-            echo "Attempt $i: pull --rebase + push"
-            if git pull --rebase origin main && git push origin HEAD:main; then
+            echo "Attempt $i: pull --rebase -> regenerate/add -> commit -> push"
+
+            git reset --hard HEAD
+            git clean -fd
+
+            git pull --rebase origin main
+
+            python api_tra.py
+
+            git add data/*.json || true
+
+            if git diff --staged --quiet; then
+              echo "No changes to commit"
+              exit 0
+            fi
+
+            git commit -m "chore: auto-update timetable"
+
+            if git push origin HEAD:main; then
               success=1
               break
             fi
+
             echo "Push failed (attempt $i), retrying in 3s..."
             sleep 3
           done
@@ -74,4 +77,4 @@ jobs:
           if [ "$success" -ne 1 ]; then
             echo "Failed to push after 3 attempts"
             exit 1
-          fi
+          
