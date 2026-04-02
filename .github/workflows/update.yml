@@ -77,4 +77,5 @@ jobs:
           if [ "$success" -ne 1 ]; then
             echo "Failed to push after 3 attempts"
             exit 1
+          fi
           
