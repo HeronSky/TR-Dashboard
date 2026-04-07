@@ -1,6 +1,5 @@
-import json
+import json,folium
 from datetime import date,timedelta
-import folium
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
@@ -35,11 +34,30 @@ st.markdown(
 
 DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
+
+def get_lang_value(name_obj,lang_key):
+    if not isinstance(name_obj,dict):
+        return ""
+    return name_obj.get(lang_key) or name_obj.get("Zh_tw") or ""
+
 st.sidebar.title("TR Dashboard")
+if "use_english_data" not in st.session_state:
+    st.session_state.use_english_data = False
+
+st.sidebar.markdown("**Settings**" if st.session_state.use_english_data else "**設定**",)
+lang_col1,lang_col2=st.sidebar.columns([1,1])
+with lang_col1:
+    st.write("Language:" if st.session_state.use_english_data else "語言：")
+with lang_col2:
+    lang=st.sidebar.radio("Lang",["中文","English"],horizontal=True,label_visibility="collapsed")
+st.session_state.use_english_data=(lang=="English")
+
+name_key = "En" if st.session_state.use_english_data else "Zh_tw"
 today = date.today()
 max_selectable_date = today + timedelta(days=6)
+date_label = "Date:" if st.session_state.use_english_data else "日期："
 selected_date = st.sidebar.date_input(
-    "選擇日期",
+    date_label,
     value=today,
     min_value=today,
     max_value=max_selectable_date,
@@ -83,12 +101,14 @@ try:
     with open(file_path,"r",encoding="utf-8") as f:
         schedule_data = json.load(f)
 except FileNotFoundError:
-    st.warning(f"資料錯誤，查無{date_str}的時刻表：/ 將顯示定期時刻表。")
+    warning_msg = f"Data error: No timetable found for {date_str}.Displaying regular timetable :/" if st.session_state.use_english_data else f"資料錯誤，查無{date_str}的時刻表：/ 將顯示定期時刻表。"
+    st.warning(warning_msg)
     with open("data/台鐵定期時刻表.json","r",encoding="utf-8") as f:
         schedule_data = json.load(f)
 
 if not isinstance(schedule_data,dict) or "TrainTimetables" not in schedule_data:
-    st.warning(f"{date_str}時刻表格式異常：/ 將顯示定期時刻表。")
+    warning_msg2 = f"Timetable format error for {date_str}. Displaying regular timetable " if st.session_state.use_english_data else f"{date_str}時刻表格式異常：/ 將顯示定期時刻表。"
+    st.warning(warning_msg2)
     with open("data/台鐵定期時刻表.json","r",encoding="utf-8") as f:
         schedule_data = json.load(f)
 
@@ -99,26 +119,29 @@ id_name_map = {}
 for timetable in schedule_data.get("TrainTimetables",[]):
     train_info = timetable["TrainInfo"]
     train_no = train_info["TrainNo"]
-    terminal_station = train_info["EndingStationName"]["Zh_tw"]
+    terminal_station = get_lang_value(train_info.get("EndingStationName",{}),name_key)
     direction = train_info["Direction"]
-    train_type = train_info["TrainTypeName"]["Zh_tw"]
+    train_type = get_lang_value(train_info.get("TrainTypeName",{}),name_key)
 
-    if "柴聯" in train_type:
-        train_type = "柴聯自強號"
-    elif "推拉式" in train_type:
-        train_type = "PP自強號"
+    if not st.session_state.use_english_data:
+        if "柴聯" in train_type:
+            train_type = "柴聯自強號"
+        elif "推拉式" in train_type:
+            train_type = "PP自強號"
+        else:
+            train_type = train_type.replace("(3000)","3000")
+            train_type = train_type.split("(")[0]
     else:
-        train_type = train_type.replace("(3000)","3000")
-        train_type = train_type.split("(")[0]
+        train_type = train_type.replace("(3000)","3000").split("(")[0]
 
     if direction == 0 or direction == "0":
-        direction_text = "順行"
+        direction_text = "Forward" if st.session_state.use_english_data else "順行"
     else:
-        direction_text = "逆行"
+        direction_text = "Reverse" if st.session_state.use_english_data else "逆行"
 
     for stop in timetable["StopTimes"]:
         time = stop.get("DepartureTime",stop.get("ArrivalTime"))
-        station_name = stop["StationName"]["Zh_tw"]
+        station_name = get_lang_value(stop.get("StationName",{}),name_key)
         station_id = stop["StationID"]
 
         id_name_map[station_name] = station_id
@@ -128,11 +151,11 @@ for timetable in schedule_data.get("TrainTimetables",[]):
             station_info[station_id] = []
 
         info_dict = {
-            "時間": time,
-            "車種": train_type,
-            "車次": train_no,
-            "終點站": terminal_station,
-            "方向": direction_text,
+            "時間" if not st.session_state.use_english_data else "Time": time,
+            "車種" if not st.session_state.use_english_data else "TrainType": train_type,
+            "車次" if not st.session_state.use_english_data else "TrainNo": train_no,
+            "終點站" if not st.session_state.use_english_data else "Terminal": terminal_station,
+            "方向" if not st.session_state.use_english_data else "Direction": direction_text,
         }
         station_info[station_id].append(info_dict)
 
@@ -169,7 +192,7 @@ with open("data/車站基本資料.json","r",encoding="utf-8") as f:
     station_data = json.load(f)
 
 for station in station_data:
-    station_name = station["StationName"]["Zh_tw"]
+    station_name = get_lang_value(station.get("StationName",{}),name_key)
     lat = station["StationPosition"]["PositionLat"]
     lon = station["StationPosition"]["PositionLon"]
 
@@ -220,12 +243,23 @@ if user_clicked_station and user_clicked_station in id_name_map:
             info_list = station_info[clicked]
 
             schedule_table = pd.DataFrame(info_list)
-            st.write(f"### {user_clicked_station}站")
-            st.write(f"總計 {len(info_list)} 班列車")
-            choice = st.selectbox("方向：",["全部","順行","逆行"])
-            if choice != "全部":
-                schedule_table = schedule_table[schedule_table["方向"] == choice]
-            schedule_table = schedule_table.sort_values(by="時間")
+            col_time = "Time" if st.session_state.use_english_data else "時間"
+            col_direction = "Direction" if st.session_state.use_english_data else "方向"
+            all_option = "All" if st.session_state.use_english_data else "全部"
+            option_forward = "Forward" if st.session_state.use_english_data else "順行"
+            option_reverse = "Reverse" if st.session_state.use_english_data else "逆行"
+            
+            st.markdown(f"## {user_clicked_station}")
+            st.markdown(
+                f"**{len(info_list)} trains**" if st.session_state.use_english_data else f"**{len(info_list)} 班列車**"
+            )
+            choice = st.selectbox(
+                "Direction:" if st.session_state.use_english_data else "方向：",
+                [all_option,option_forward,option_reverse],
+            )
+            if choice != all_option:
+                schedule_table = schedule_table[schedule_table[col_direction] == choice]
+            schedule_table = schedule_table.sort_values(by=col_time)
             st.dataframe(schedule_table,hide_index=True,width="stretch",height=500)
 
 
