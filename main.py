@@ -1,10 +1,11 @@
 import json,folium
 from datetime import date,timedelta
+import networkx as nx
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-st.set_page_config(page_title="TR Dashboard",layout="wide")
+st.set_page_config(page_title="TR Dashboard",layout="wide",initial_sidebar_state="expanded")
 
 st.markdown(
     """
@@ -19,13 +20,21 @@ st.markdown(
             padding-right: 0rem !important;
             max-width: 100% !important;
         }
-    
         [data-testid="stSidebar"] {
             min-width: 350px;
             max-width: 350px;
         }
         [data-testid="stAppViewContainer"],[data-testid="stMainBlockContainer"] {
             overflow: hidden !important;
+        }
+        [data-testid="collapsedControl"] {
+        display: none !important;
+        }
+        section[data-testid="stSidebar"] {
+        transform: translateX(0) !important;
+        }
+        section[data-testid="stSidebar"][aria-expanded="false"] {
+        transform: translateX(0) !important;
         }
     </style>
     """,
@@ -39,6 +48,19 @@ def get_lang_value(name_obj,lang_key):
     if not isinstance(name_obj,dict):
         return ""
     return name_obj.get(lang_key) or name_obj.get("Zh_tw") or ""
+
+def fix_name(name):
+    return (name or "").replace("臺","台").replace("-環島","")
+
+def sort_by_train_no(df,train_no_col):
+    sorted_df = df.copy()
+    sorted_df["__train_no_num"] = pd.to_numeric(sorted_df[train_no_col],errors="coerce")
+    sorted_df = sorted_df.sort_values(by=["__train_no_num",train_no_col],na_position="last")
+    return sorted_df.drop(columns=["__train_no_num"])
+
+segment_freq = {}
+segment_train_info = {}
+segment_label_to_key = {}
 
 st.sidebar.title("TR Dashboard")
 if "use_english_data" not in st.session_state:
@@ -115,6 +137,19 @@ if not isinstance(schedule_data,dict) or "TrainTimetables" not in schedule_data:
 time_tables = {}
 station_info = {}
 id_name_map = {}
+path_cache = {}
+
+G = nx.Graph()
+with open("data/路線車站資料.json","r",encoding="utf-8") as f:
+    line_data = json.load(f)
+
+for line in line_data.get("StationOfLines",[]):
+    stations = line.get("Stations",[])
+    for i in range(len(stations)-1):
+        sta1 = fix_name(stations[i]["StationName"]["Zh_tw"])
+        sta2 = fix_name(stations[i+1]["StationName"]["Zh_tw"])
+        if sta1 and sta2 and sta1 != sta2:
+            G.add_edge(sta1,sta2)
 
 for timetable in schedule_data.get("TrainTimetables",[]):
     train_info = timetable["TrainInfo"]
@@ -139,7 +174,9 @@ for timetable in schedule_data.get("TrainTimetables",[]):
     else:
         direction_text = "Reverse" if st.session_state.use_english_data else "逆行"
 
-    for stop in timetable["StopTimes"]:
+    stops = timetable.get("StopTimes",[])
+
+    for stop in stops:
         time = stop.get("DepartureTime",stop.get("ArrivalTime"))
         station_name = get_lang_value(stop.get("StationName",{}),name_key)
         station_id = stop["StationID"]
@@ -150,14 +187,46 @@ for timetable in schedule_data.get("TrainTimetables",[]):
         if station_id not in station_info:
             station_info[station_id] = []
 
-        info_dict = {
+        info = {
             "時間" if not st.session_state.use_english_data else "Time": time,
             "車種" if not st.session_state.use_english_data else "TrainType": train_type,
             "車次" if not st.session_state.use_english_data else "TrainNo": train_no,
             "終點站" if not st.session_state.use_english_data else "Terminal": terminal_station,
             "方向" if not st.session_state.use_english_data else "Direction": direction_text,
         }
-        station_info[station_id].append(info_dict)
+        station_info[station_id].append(info)
+
+    # 線段密度：用路網最短路徑展開，處理快慢車跳站
+    for i in range(len(stops)-1):
+        a = fix_name(stops[i]["StationName"]["Zh_tw"])
+        b = fix_name(stops[i+1]["StationName"]["Zh_tw"])
+        if not a or not b or a == b:
+            continue
+
+        pair_key = tuple(sorted([a,b]))
+        if pair_key not in path_cache:
+            try:
+                path_cache[pair_key] = nx.shortest_path(G,source=a,target=b)
+            except (nx.NetworkXNoPath,nx.NodeNotFound):
+                path_cache[pair_key] = None
+
+        path = path_cache[pair_key]
+        if not path:
+            continue
+
+        for j in range(len(path)-1):
+            seg = tuple(sorted([path[j],path[j+1]]))
+            segment_freq[seg] = segment_freq.get(seg,0) + 1
+
+            row = {
+                "車次" if not st.session_state.use_english_data else "TrainNo": train_no,
+                "車種" if not st.session_state.use_english_data else "TrainType": train_type,
+                "終點站" if not st.session_state.use_english_data else "Terminal": terminal_station,
+                "方向" if not st.session_state.use_english_data else "Direction": direction_text,
+            }
+            if seg not in segment_train_info:
+                segment_train_info[seg] = []
+            segment_train_info[seg].append(row)
 
 with open("data/台鐵線型.json","r",encoding="utf-8") as f:
     shape_data = json.load(f)
@@ -191,6 +260,49 @@ for shape in shape_data["Shapes"]:
 with open("data/車站基本資料.json","r",encoding="utf-8") as f:
     station_data = json.load(f)
 
+station_display_map = {}
+for station in station_data:
+    zh = fix_name(station["StationName"]["Zh_tw"])
+    en = station.get("StationName",{}).get("En","")
+    station_display_map[zh] = {
+    "zh": zh,
+    "en": en if en else zh,
+    }
+
+station_coords_zh = {}
+for station in station_data:
+    zh = fix_name(station["StationName"]["Zh_tw"])
+    lat = station["StationPosition"]["PositionLat"]
+    lon = station["StationPosition"]["PositionLon"]
+    station_coords_zh[zh] = [lat,lon]
+
+for (s1,s2),freq in segment_freq.items():
+    if s1 not in station_coords_zh or s2 not in station_coords_zh:
+        continue
+
+    if freq >= 150:
+        color,weight = "#e74c3c",5
+    elif freq >= 100:
+        color,weight = "#e67e22",4
+    elif freq >= 50:
+        color,weight = "#f1c40f",3
+    else:
+        color,weight = "#2ecc71",2
+
+    station1 = station_display_map.get(s1,{}).get("en" if st.session_state.use_english_data else "zh",s1)
+    station2 = station_display_map.get(s2,{}).get("en" if st.session_state.use_english_data else "zh",s2)
+    trains = "trains" if st.session_state.use_english_data else "班"
+    tooltip_text = f"{station1} ＝ {station2} : {freq} {trains}"
+    segment_label_to_key[tooltip_text] = (s1,s2)
+
+    folium.PolyLine(
+        locations=[station_coords_zh[s1],station_coords_zh[s2]],
+        color=color,
+        weight=weight,
+        opacity=0.75,
+        tooltip=tooltip_text,
+    ).add_to(m)
+
 for station in station_data:
     station_name = get_lang_value(station.get("StationName",{}),name_key)
     lat = station["StationPosition"]["PositionLat"]
@@ -199,13 +311,13 @@ for station in station_data:
     freq = time_tables.get(station_name,0)
 
     if freq >= 150:
-        color,vis_radius = PALETTE["tier_high"],4.0
+        color,vis_radius = PALETTE["tier_high"],4.5
     elif freq >= 100:
-        color,vis_radius = PALETTE["tier_mid_high"],3.5
+        color,vis_radius = PALETTE["tier_mid_high"],4.0
     elif freq >= 50:
-        color,vis_radius = PALETTE["tier_mid"],3.0
+        color,vis_radius = PALETTE["tier_mid"],3.5
     elif freq > 0:
-        color,vis_radius = PALETTE["tier_low"],2.5
+        color,vis_radius = PALETTE["tier_low"],3.0
     else:
         continue
 
@@ -222,7 +334,7 @@ for station in station_data:
 
     folium.CircleMarker(
         location=[lat,lon],
-        radius=15,
+        radius=17,
         color="none",
         weight=0,
         fill=True,
@@ -231,14 +343,14 @@ for station in station_data:
         tooltip=station_name,
     ).add_to(m)
 
-user_clicked_station = None
+clicked_tooltip = None
 map_data = st_folium(m,use_container_width=True,height=900)
 if map_data and map_data.get("last_object_clicked_tooltip"):
-    user_clicked_station = map_data["last_object_clicked_tooltip"]
+    clicked_tooltip = map_data["last_object_clicked_tooltip"]
 
-if user_clicked_station and user_clicked_station in id_name_map:
+if clicked_tooltip and clicked_tooltip in id_name_map:
     with st.sidebar:
-        clicked = id_name_map[user_clicked_station]
+        clicked = id_name_map[clicked_tooltip]
         if clicked in station_info:
             info_list = station_info[clicked]
 
@@ -249,7 +361,7 @@ if user_clicked_station and user_clicked_station in id_name_map:
             option_forward = "Forward" if st.session_state.use_english_data else "順行"
             option_reverse = "Reverse" if st.session_state.use_english_data else "逆行"
             
-            st.markdown(f"## {user_clicked_station}")
+            st.markdown(f"## {clicked_tooltip}")
             st.markdown(
                 f"**{len(info_list)} trains**" if st.session_state.use_english_data else f"**{len(info_list)} 班列車**"
             )
@@ -261,6 +373,19 @@ if user_clicked_station and user_clicked_station in id_name_map:
                 schedule_table = schedule_table[schedule_table[col_direction] == choice]
             schedule_table = schedule_table.sort_values(by=col_time)
             st.dataframe(schedule_table,hide_index=True,width="stretch",height=500)
+elif clicked_tooltip and clicked_tooltip in segment_label_to_key:
+    with st.sidebar:
+        seg = segment_label_to_key[clicked_tooltip]
+        rows = segment_train_info.get(seg,[])
+
+        st.markdown(f"## {clicked_tooltip}")
+        st.markdown(
+            f"**{len(rows)} trains**" if st.session_state.use_english_data else f"**{len(rows)} 班列車**"
+        )
+        if rows:
+            df_seg = pd.DataFrame(rows)
+            sort_col = "TrainNo" if st.session_state.use_english_data else "車次"
+            st.dataframe(sort_by_train_no(df_seg,sort_col),hide_index=True,width="stretch",height=500)
 
 
 
