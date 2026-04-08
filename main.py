@@ -66,7 +66,6 @@ st.sidebar.title("TR Dashboard")
 if "use_english_data" not in st.session_state:
     st.session_state.use_english_data = False
 
-st.sidebar.markdown("**Settings**" if st.session_state.use_english_data else "**設定**",)
 lang_col1,lang_col2=st.sidebar.columns([1,1])
 with lang_col1:
     st.write("Language:" if st.session_state.use_english_data else "語言：")
