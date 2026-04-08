@@ -196,7 +196,6 @@ for timetable in schedule_data.get("TrainTimetables",[]):
         }
         station_info[station_id].append(info)
 
-    # 線段密度：用路網最短路徑展開，處理快慢車跳站
     for i in range(len(stops)-1):
         a = fix_name(stops[i]["StationName"]["Zh_tw"])
         b = fix_name(stops[i+1]["StationName"]["Zh_tw"])
