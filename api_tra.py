@@ -11,6 +11,17 @@ DAILY_TIMETABLE_URL_TEMPLATE = 'https://tdx.transportdata.tw/api/basic/v3/Rail/T
 DATA_DIR = Path('data')
 
 
+def should_refresh_general_timetable(file_path: Path, today: datetime.date | None = None) -> bool:
+    if today is None:
+        today = datetime.date.today()
+
+    if not file_path.exists():
+        return True
+
+    modified_time = datetime.datetime.fromtimestamp(file_path.stat().st_mtime)
+    return (modified_time.year,modified_time.month) != (today.year,today.month)
+
+
 def fetch_token() -> str | None:
     form_data = parse.urlencode(
         {
@@ -80,13 +91,16 @@ def download_timetable(access_token: str,days: int = 7) -> None:
     }
     DATA_DIR.mkdir(parents=True,exist_ok=True)
 
-    print('Downloading TRA general timetable...')
-    general_data = fetch_json(GENERAL_TIMETABLE_URL,headers)
-    if general_data is not None:
-        general_file = DATA_DIR / '台鐵定期時刻表.json'
-        with general_file.open('w',encoding='utf-8') as f:
-            json.dump(general_data,f,ensure_ascii=False,indent=2)
-        print(f'Done. File saved: {general_file.as_posix()}')
+    general_file = DATA_DIR / '台鐵定期時刻表.json'
+    if should_refresh_general_timetable(general_file):
+        print('Downloading TRA general timetable...')
+        general_data = fetch_json(GENERAL_TIMETABLE_URL,headers)
+        if general_data is not None:
+            with general_file.open('w',encoding='utf-8') as f:
+                json.dump(general_data,f,ensure_ascii=False,indent=2)
+            print(f'Done. File saved: {general_file.as_posix()}')
+    else:
+        print(f'Skipping TRA general timetable download this month: {general_file.as_posix()}')
 
     start_date = datetime.date.today()
     end_date = start_date + datetime.timedelta(days=days - 1)
