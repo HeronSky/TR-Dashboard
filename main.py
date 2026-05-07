@@ -5,25 +5,27 @@ import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 
-st.set_page_config(page_title="TR Dashboard",layout="wide",initial_sidebar_state="expanded")
+st.set_page_config(page_title="TR Dashboard",layout="wide",initial_sidebar_state="collapsed")
 
 st.markdown(
     """
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        html,body,[class*="css"] { font-family:'Noto Sans TC',sans-serif; }
         header {visibility: hidden;}
         #MainMenu {visibility: hidden;}
         
         .block-container {
-            padding-top: 0rem !important;
-            padding-bottom: 0rem !important;
-            padding-left: 0rem !important;
-            padding-right: 0rem !important;
-            max-width: 100% !important;
+            padding-top: 0.2rem !important;
+            padding-bottom: 0.35rem !important;
+            padding-left: 0.9rem !important;
+            padding-right: 0.9rem !important;
+            max-width: 1500px !important;
         }
-        [data-testid="stSidebar"] {
-            min-width: 350px;
-            max-width: 350px;
-        }
+        [data-testid="stHorizontalBlock"] { gap:0.5rem; }
+        [data-testid="stSelectbox"] { margin-bottom:0; }
+        [data-testid="stDateInput"] { margin-bottom:0; }
+        [data-testid="stSidebar"] { display:none !important; }
         [data-testid="stAppViewContainer"],[data-testid="stMainBlockContainer"] {
             overflow: hidden !important;
         }
@@ -35,6 +37,24 @@ st.markdown(
         }
         section[data-testid="stSidebar"][aria-expanded="false"] {
         transform: translateX(0) !important;
+        }
+        div[data-testid="stButton"] > button {
+            min-height:46px;
+            font-size:16px;
+            font-weight:600;
+        }
+        div[data-testid="stDateInput"] input {
+            min-height:46px;
+            font-size:16px;
+        }
+        div[data-testid="stDateInput"] button {
+            min-height:46px;
+        }
+        .top-row-title {
+            margin-top:0.15rem;
+        }
+        div[data-testid="stDateInput"],div[data-testid="stButton"] {
+            margin-top:0.15rem;
         }
     </style>
     """,
@@ -62,30 +82,44 @@ segment_freq = {}
 segment_train_info = {}
 segment_label_to_key = {}
 
-st.sidebar.title("TR Dashboard")
 if "use_english_data" not in st.session_state:
     st.session_state.use_english_data = False
-
-lang_col1,lang_col2=st.sidebar.columns([1,1])
-with lang_col1:
-    st.write("Language:" if st.session_state.use_english_data else "語言：")
-with lang_col2:
-    lang=st.sidebar.radio("Lang",["中文","English"],horizontal=True,label_visibility="collapsed")
-st.session_state.use_english_data=(lang=="English")
+if "active_page" not in st.session_state:
+    st.session_state.active_page = "map"
+if "selected_station_id" not in st.session_state:
+    st.session_state.selected_station_id = None
+if "selected_station_name" not in st.session_state:
+    st.session_state.selected_station_name = None
+if "selected_segment" not in st.session_state:
+    st.session_state.selected_segment = None
 
 name_key = "En" if st.session_state.use_english_data else "Zh_tw"
 today = date.today()
 max_selectable_date = today + timedelta(days=6)
-date_label = "Date:" if st.session_state.use_english_data else "日期："
-selected_date = st.sidebar.date_input(
-    date_label,
-    value=today,
-    min_value=today,
-    max_value=max_selectable_date,
-    format="YYYY/MM/DD",
-)
+left_top,date_col,lang_col=st.columns([2.2,1.1,1.0])
+
+with left_top:
+    st.markdown('<div class="top-row-title"><h2>TR Dashboard</h2></div>',unsafe_allow_html=True)
+
+with date_col:
+    date_label = "Date:" if st.session_state.use_english_data else "日期："
+    selected_date = st.date_input(
+        date_label,
+        value=today,
+        min_value=today,
+        max_value=max_selectable_date,
+        format="YYYY/MM/DD",
+        label_visibility="collapsed",
+    )
+
+with lang_col:
+    next_lang = "English" if not st.session_state.use_english_data else "中文"
+    if st.button(next_lang,use_container_width=True):
+        st.session_state.use_english_data = not st.session_state.use_english_data
+        st.rerun()
+
+name_key = "En" if st.session_state.use_english_data else "Zh_tw"
 selected_day = DAYS[selected_date.weekday()]
-st.sidebar.divider()
 
 PALETTE = {
     "line": "#3A3B4C",
@@ -341,42 +375,67 @@ for station in station_data:
         tooltip=station_name,
     ).add_to(m)
 
-clicked_tooltip = None
-map_data = st_folium(m,use_container_width=True,height=900)
-if map_data and map_data.get("last_object_clicked_tooltip"):
-    clicked_tooltip = map_data["last_object_clicked_tooltip"]
+if st.session_state.active_page=="map":
+    map_data = st_folium(m,use_container_width=True,height=700)
+    if map_data and map_data.get("last_object_clicked_tooltip"):
+        clicked_tooltip = map_data["last_object_clicked_tooltip"]
+        
+        if clicked_tooltip in id_name_map:
+            st.session_state.selected_station_id = id_name_map[clicked_tooltip]
+            st.session_state.selected_station_name = clicked_tooltip
+            st.session_state.selected_segment = None
+            st.session_state.active_page = "station"
+            st.rerun()
+        elif clicked_tooltip in segment_label_to_key:
+            st.session_state.selected_segment = segment_label_to_key[clicked_tooltip]
+            st.session_state.selected_station_id = None
+            st.session_state.active_page = "segment"
+            st.rerun()
 
-if clicked_tooltip and clicked_tooltip in id_name_map:
-    with st.sidebar:
-        clicked = id_name_map[clicked_tooltip]
-        if clicked in station_info:
-            info_list = station_info[clicked]
+elif st.session_state.active_page=="station":
+    back_col,_ = st.columns([0.3,2.7])
+    with back_col:
+        if st.button("⬅ Back to Map" if st.session_state.use_english_data else "⬅ 返回地圖",use_container_width=True,type="primary"):
+            st.session_state.active_page = "map"
+            st.rerun()
+    
+    clicked = st.session_state.selected_station_id
+    if clicked and clicked in station_info:
+        info_list = station_info[clicked]
+        
+        st.markdown(f"## {st.session_state.selected_station_name}")
+        st.markdown(
+            f"**{len(info_list)} trains**" if st.session_state.use_english_data else f"**{len(info_list)} 班列車**"
+        )
+        
+        schedule_table = pd.DataFrame(info_list)
+        col_time = "Time" if st.session_state.use_english_data else "時間"
+        col_direction = "Direction" if st.session_state.use_english_data else "方向"
+        all_option = "All" if st.session_state.use_english_data else "全部"
+        option_forward = "Forward" if st.session_state.use_english_data else "順行"
+        option_reverse = "Reverse" if st.session_state.use_english_data else "逆行"
+        
+        choice = st.selectbox(
+            "Direction:" if st.session_state.use_english_data else "方向：",
+            [all_option,option_forward,option_reverse],
+        )
+        if choice != all_option:
+            schedule_table = schedule_table[schedule_table[col_direction] == choice]
+        schedule_table = schedule_table.sort_values(by=col_time)
+        st.dataframe(schedule_table,hide_index=True,width="stretch",height=500)
 
-            schedule_table = pd.DataFrame(info_list)
-            col_time = "Time" if st.session_state.use_english_data else "時間"
-            col_direction = "Direction" if st.session_state.use_english_data else "方向"
-            all_option = "All" if st.session_state.use_english_data else "全部"
-            option_forward = "Forward" if st.session_state.use_english_data else "順行"
-            option_reverse = "Reverse" if st.session_state.use_english_data else "逆行"
-            
-            st.markdown(f"## {clicked_tooltip}")
-            st.markdown(
-                f"**{len(info_list)} trains**" if st.session_state.use_english_data else f"**{len(info_list)} 班列車**"
-            )
-            choice = st.selectbox(
-                "Direction:" if st.session_state.use_english_data else "方向：",
-                [all_option,option_forward,option_reverse],
-            )
-            if choice != all_option:
-                schedule_table = schedule_table[schedule_table[col_direction] == choice]
-            schedule_table = schedule_table.sort_values(by=col_time)
-            st.dataframe(schedule_table,hide_index=True,width="stretch",height=500)
-elif clicked_tooltip and clicked_tooltip in segment_label_to_key:
-    with st.sidebar:
-        seg = segment_label_to_key[clicked_tooltip]
-        rows = segment_train_info.get(seg,[])
-
-        st.markdown(f"## {clicked_tooltip}")
+elif st.session_state.active_page=="segment":
+    back_col,_ = st.columns([0.3,2.7])
+    with back_col:
+        if st.button("⬅ Back to Map" if st.session_state.use_english_data else "⬅ 返回地圖",use_container_width=True,type="primary"):
+            st.session_state.active_page = "map"
+            st.rerun()
+    
+    seg = st.session_state.selected_segment
+    if seg and seg in segment_train_info:
+        rows = segment_train_info[seg]
+        s1,s2 = seg
+        st.markdown(f"## {s1} ＝ {s2}")
         st.markdown(
             f"**{len(rows)} trains**" if st.session_state.use_english_data else f"**{len(rows)} 班列車**"
         )
